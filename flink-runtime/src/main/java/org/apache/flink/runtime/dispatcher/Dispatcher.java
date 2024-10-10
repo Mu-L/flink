@@ -22,7 +22,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.CheckpointingOptions;
@@ -62,7 +61,6 @@ import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmanager.JobGraphWriter;
 import org.apache.flink.runtime.jobmaster.JobManagerRunner;
 import org.apache.flink.runtime.jobmaster.JobManagerRunnerResult;
@@ -93,6 +91,7 @@ import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcServiceUtils;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
+import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
@@ -541,7 +540,7 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
                                 // job with the given jobID is not terminated, yet
                                 return FutureUtils.completedExceptionally(
                                         DuplicateJobSubmissionException.of(jobID));
-                            } else if (isPartialResourceConfigured(jobGraph)) {
+                            } else if (jobGraph.isPartialResourceConfigured()) {
                                 return FutureUtils.completedExceptionally(
                                         new JobSubmissionException(
                                                 jobID,
@@ -581,25 +580,6 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
      */
     private CompletableFuture<Boolean> isInGloballyTerminalState(JobID jobId) {
         return jobResultStore.hasJobResultEntryAsync(jobId);
-    }
-
-    private boolean isPartialResourceConfigured(JobGraph jobGraph) {
-        boolean hasVerticesWithUnknownResource = false;
-        boolean hasVerticesWithConfiguredResource = false;
-
-        for (JobVertex jobVertex : jobGraph.getVertices()) {
-            if (jobVertex.getMinResources() == ResourceSpec.UNKNOWN) {
-                hasVerticesWithUnknownResource = true;
-            } else {
-                hasVerticesWithConfiguredResource = true;
-            }
-
-            if (hasVerticesWithUnknownResource && hasVerticesWithConfiguredResource) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private CompletableFuture<Acknowledge> internalSubmitJob(JobGraph jobGraph) {
@@ -1101,14 +1081,19 @@ public abstract class Dispatcher extends FencedRpcEndpoint<DispatcherId>
     @Override
     public CompletableFuture<CoordinationResponse> deliverCoordinationRequestToCoordinator(
             JobID jobId,
-            OperatorID operatorId,
+            String operatorUid,
             SerializedValue<CoordinationRequest> serializedRequest,
             Duration timeout) {
+        // Convert operatorUid to OperatorID for querying.
+        // This approach is feasible because an operator's OperatorID is derived from its UID, when
+        // available.
         return performOperationOnJobMasterGateway(
                 jobId,
                 gateway ->
                         gateway.deliverCoordinationRequestToCoordinator(
-                                operatorId, serializedRequest, timeout));
+                                StreamingJobGraphGenerator.generateOperatorID(operatorUid),
+                                serializedRequest,
+                                timeout));
     }
 
     @Override
